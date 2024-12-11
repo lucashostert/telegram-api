@@ -141,7 +141,7 @@ async def schedule_task(task_id, task_details):
         await asyncio.sleep(1)
 
 # Loop Assíncrono
-async def start_asyncio_loop():
+def start_asyncio_loop():
     global asyncio_loop
     asyncio_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(asyncio_loop)
