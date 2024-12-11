@@ -24,7 +24,7 @@ api_id = None
 api_hash = None
 asyncio_loop = None
 
-tasks = {}  # {task_id: {"group": ..., "time": ..., "image": ..., "text": ..., "status": ...}}
+tasks = {}  # {task_id: {"group_name": ..., "time": ..., "image": ..., "text": ..., "status": ...}}
 groups_cache = []
 upload_dir = "uploads"
 os.makedirs(upload_dir, exist_ok=True)
@@ -46,7 +46,7 @@ def init_db():
     c.execute('''
         CREATE TABLE IF NOT EXISTS tasks (
             id TEXT PRIMARY KEY,
-            "group" TEXT,
+            group_name TEXT,
             time TEXT,
             image TEXT,
             text TEXT,
@@ -55,7 +55,6 @@ def init_db():
     ''')
     conn.commit()
     conn.close()
-
 
 init_db()
 
@@ -125,19 +124,19 @@ async def load_groups():
     except Exception as e:
         return False, f"Erro ao carregar grupos: {e}"
 
-async def send_image_to_group(group, image_path, text=""):
+async def send_image_to_group(group_name, image_path, text=""):
     try:
         dialogs = await client.get_dialogs()
-        chat = next(dialog for dialog in dialogs if dialog.is_group and dialog.title == group)
+        chat = next(dialog for dialog in dialogs if dialog.is_group and dialog.title == group_name)
         await client.send_file(chat, image_path, caption=text)
     except Exception as e:
-        print(f"Erro ao enviar imagem para o grupo {group}: {e}")
+        print(f"Erro ao enviar imagem para o grupo {group_name}: {e}")
 
 async def schedule_task(task_id, task_details):
     while tasks.get(task_id, {}).get("status") == "Rodando":
         current_time = time.strftime("%H:%M")
         if current_time == task_details["time"]:
-            await send_image_to_group(task_details["group"], task_details["image"], task_details["text"])
+            await send_image_to_group(task_details["group_name"], task_details["image"], task_details["text"])
             await asyncio.sleep(60)  # Espera 1 minuto antes de verificar novamente
         await asyncio.sleep(1)
 
@@ -163,29 +162,16 @@ def load_state():
         client = TelegramClient(StringSession(session_str), int(api_id), api_hash)
         asyncio.run_coroutine_threadsafe(client.connect(), asyncio_loop)
         authenticated = True
-    c.execute("SELECT id, group, time, image, text, status FROM tasks")
+    c.execute("SELECT id, group_name, time, image, text, status FROM tasks")
     for row in c.fetchall():
-        task_id, group, time, image, text, status = row
-        tasks[task_id] = {"group": group, "time": time, "image": image, "text": text, "status": status}
+        task_id, group_name, time, image, text, status = row
+        tasks[task_id] = {"group_name": group_name, "time": time, "image": image, "text": text, "status": status}
         if status == "Rodando":
             asyncio.run_coroutine_threadsafe(schedule_task(task_id, tasks[task_id]), asyncio_loop)
     conn.close()
 
 load_state()
-def stop_task(task_id):
-    if task_id in tasks:
-        tasks[task_id]["status"] = "Parada"
 
-def resume_task(task_id):
-    if task_id in tasks:
-        tasks[task_id]["status"] = "Rodando"
-        asyncio.run_coroutine_threadsafe(schedule_task(task_id, tasks[task_id]), asyncio_loop)
-
-def delete_task(task_id):
-    if task_id in tasks:
-        # Não há cancelamento ativo de asyncio aqui, mas se estiver "Rodando" não terá impacto imediato
-        # A checagem no loop do schedule_task já impedirá o envio futuro se a task for removida
-        del tasks[task_id]
 # Rotas da API
 @app.route("/auth/send_code", methods=["POST"])
 def auth_send_code():
@@ -222,56 +208,11 @@ def auth_verify_code():
             msg += f" | Aviso: {gdata}"
     return jsonify({"success": success, "message": msg}), status
 
-@app.route("/uploads/<path:filename>", methods=["GET"])
-def serve_uploaded_file(filename):
-    return send_from_directory(upload_dir, filename)    
-
 @app.route("/groups", methods=["GET"])
 def get_groups():
     if not authenticated:
         return jsonify({"success": False, "message": "Não autenticado"}), 401
     return jsonify({"success": True, "groups": groups_cache}), 200
-
-@app.route("/images", methods=["POST"])
-def upload_images():
-    if not authenticated:
-        return jsonify({"success": False, "message": "Não autenticado"}), 401
-
-    # Recebe arquivos via multipart/form-data
-    # Pode receber vários arquivos de imagem
-    # Pode receber textos adicionais para cada imagem (opcional)
-    # Exemplo: enviar com curl:
-    # curl -F "images=@caminho_da_imagem.jpg" -F "images=@outra_imagem.png" http://localhost:5000/images
-
-    if "images" not in request.files:
-        return jsonify({"success": False, "message": "Nenhuma imagem enviada"}), 400
-
-    files = request.files.getlist("images")
-    # opcionalmente poderíamos receber textos associados a cada imagem, por ex:
-    # texts = request.form.getlist("texts") -> lista de textos na mesma ordem
-
-    # Para simplificar, vamos permitir que o texto da imagem seja enviado via um array JSON separado
-    # Ex: texts=["texto da primeira imagem", "texto da segunda imagem"]
-    texts = request.form.get("texts")
-    if texts:
-        import json
-        try:
-            texts = json.loads(texts)
-        except:
-            texts = []
-
-    if texts and len(texts) != len(files):
-        return jsonify({"success": False, "message": "O número de textos não corresponde ao número de imagens"}), 400
-
-    uploaded_data = []
-    for i, f in enumerate(files):
-        filename = f"{uuid.uuid4()}_{f.filename}"
-        filepath = os.path.join(upload_dir, filename)
-        f.save(filepath)
-        text = texts[i] if texts and i < len(texts) else ""
-        uploaded_data.append({"path": filepath, "text": text})
-
-    return jsonify({"success": True, "uploaded_images": uploaded_data}), 200
 
 @app.route("/tasks", methods=["POST"])
 def add_new_tasks():
@@ -279,12 +220,12 @@ def add_new_tasks():
         return jsonify({"success": False, "message": "Não autenticado"}), 401
 
     data = request.json
-    group = data.get("group")
+    group_name = data.get("group_name")
     time = data.get("time")
     images_data = data.get("images")
 
-    if not group or not time or not images_data:
-        return jsonify({"success": False, "message": "group, time e images são obrigatórios"}), 400
+    if not group_name or not time or not images_data:
+        return jsonify({"success": False, "message": "group_name, time e images são obrigatórios"}), 400
 
     try:
         time.strptime(time, "%H:%M")
@@ -302,14 +243,14 @@ def add_new_tasks():
 
         task_id = str(uuid.uuid4())
         tasks[task_id] = {
-            "group": group,
+            "group_name": group_name,
             "time": time,
             "image": path,
             "text": text,
             "status": "Rodando",
         }
-        c.execute("INSERT INTO tasks (id, group, time, image, text, status) VALUES (?, ?, ?, ?, ?, ?)",
-                  (task_id, group, time, path, text, "Rodando"))
+        c.execute("INSERT INTO tasks (id, group_name, time, image, text, status) VALUES (?, ?, ?, ?, ?, ?)",
+                  (task_id, group_name, time, path, text, "Rodando"))
         asyncio.run_coroutine_threadsafe(schedule_task(task_id, tasks[task_id]), asyncio_loop)
         created_tasks.append({"task_id": task_id})
     conn.commit()
@@ -361,28 +302,6 @@ def resume_a_task(task_id):
 
     asyncio.run_coroutine_threadsafe(schedule_task(task_id, tasks[task_id]), asyncio_loop)
     return jsonify({"success": True, "message": "Tarefa retomada"}), 200
-
-@app.route("/auth/logout", methods=["POST"])
-def auth_logout():
-    global authenticated, authenticated_phone, client
-    if not authenticated:
-        return jsonify({"success": False, "message": "Não está autenticado"}), 401
-    
-    # Desconectar do Telegram
-    future = asyncio.run_coroutine_threadsafe(client.log_out(), asyncio_loop)
-    try:
-        future.result()
-    except Exception as e:
-        return jsonify({"success": False, "message": f"Erro ao deslogar: {e}"}), 400
-
-    # Alternativamente, se log_out não funcionar como esperado, use:
-    # future = asyncio.run_coroutine_threadsafe(client.disconnect(), asyncio_loop)
-    # future.result()
-
-    authenticated = False
-    authenticated_phone = None
-    return jsonify({"success": True, "message": "Desconectado com sucesso!"}), 200
-
 
 @app.route("/tasks/<task_id>", methods=["DELETE"])
 def delete_a_task(task_id):
