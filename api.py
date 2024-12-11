@@ -46,7 +46,7 @@ def init_db():
     c.execute('''
         CREATE TABLE IF NOT EXISTS tasks (
             id TEXT PRIMARY KEY,
-            group TEXT,
+            "group" TEXT,
             time TEXT,
             image TEXT,
             text TEXT,
@@ -55,6 +55,7 @@ def init_db():
     ''')
     conn.commit()
     conn.close()
+
 
 init_db()
 
