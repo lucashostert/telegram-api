@@ -11,6 +11,8 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from threading import Thread
 import shutil
 import time
+from flask import send_from_directory
+
 
 app = Flask(__name__)
 CORS(app)
@@ -174,6 +176,10 @@ def auth_verify_code():
             # Não interrompe a autenticação, mas avisa do erro
             msg += f" | Aviso: {gdata}"
     return jsonify({"success": success, "message": msg}), status
+
+@app.route("/uploads/<path:filename>", methods=["GET"])
+def serve_uploaded_file(filename):
+    return send_from_directory(upload_dir, filename)    
 
 @app.route("/groups", methods=["GET"])
 def get_groups():
