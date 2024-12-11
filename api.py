@@ -330,6 +330,7 @@ def delete_a_task(task_id):
     return jsonify({"success": True, "message": "Tarefa deletada"}), 200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8443, debug=True, ssl_context=("/etc/ssl/certs/cert.pem", "/etc/ssl/private/privkey.pem"))
+    app.run(host="0.0.0.0", port=443, ssl_context=("/etc/letsencrypt/live/paineltech.shop/fullchain.pem", "/etc/letsencrypt/live/paineltech.shop/privkey.pem"))
+
 
 
