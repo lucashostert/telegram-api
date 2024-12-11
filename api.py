@@ -6,6 +6,8 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError, AuthRestartError
+from telethon.tl.functions.messages import GetFullChatRequest
+from telethon.tl.functions.channels import GetFullChannelRequest
 from threading import Thread
 import shutil
 import time
@@ -61,11 +63,36 @@ async def load_groups():
     global groups_cache
     try:
         dialogs = await client.get_dialogs()
-        groups = [dialog.title for dialog in dialogs if dialog.is_group]
-        groups_cache = groups
-        return True, groups
+        groups_info = []
+        for dialog in dialogs:
+            if dialog.is_group:
+                entity = dialog.entity
+                link = None
+                if dialog.is_channel:
+                    # É um canal ou supergrupo
+                    # Para supergrupos, usa-se GetFullChannelRequest
+                    full = await client(GetFullChannelRequest(channel=entity))
+                    invite = full.full_chat.exported_invite
+                    if invite:
+                        link = invite.link
+                    else:
+                        # Se não houver exported_invite e for público com username
+                        if hasattr(entity, 'username') and entity.username:
+                            link = f"https://t.me/{entity.username}"
+                else:
+                    # É um grupo comum
+                    full = await client(GetFullChatRequest(chat_id=entity.id))
+                    invite = full.full_chat.exported_invite
+                    if invite:
+                        link = invite.link
+
+                groups_info.append({"title": dialog.title, "link": link})
+
+        groups_cache = groups_info
+        return True, groups_info
     except Exception as e:
         return False, f"Erro ao carregar grupos: {e}"
+
 
 async def send_image_to_group(group, image_path, text=""):
     try:
