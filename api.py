@@ -264,6 +264,28 @@ def resume_a_task(task_id):
     resume_task(task_id)
     return jsonify({"success": True, "message": "Tarefa retomada"}), 200
 
+@app.route("/auth/logout", methods=["POST"])
+def auth_logout():
+    global authenticated, authenticated_phone, client
+    if not authenticated:
+        return jsonify({"success": False, "message": "Não está autenticado"}), 401
+    
+    # Desconectar do Telegram
+    future = asyncio.run_coroutine_threadsafe(client.log_out(), asyncio_loop)
+    try:
+        future.result()
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Erro ao deslogar: {e}"}), 400
+
+    # Alternativamente, se log_out não funcionar como esperado, use:
+    # future = asyncio.run_coroutine_threadsafe(client.disconnect(), asyncio_loop)
+    # future.result()
+
+    authenticated = False
+    authenticated_phone = None
+    return jsonify({"success": True, "message": "Desconectado com sucesso!"}), 200
+
+
 @app.route("/tasks/<task_id>", methods=["DELETE"])
 def delete_a_task(task_id):
     if not authenticated:
