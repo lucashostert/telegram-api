@@ -214,6 +214,37 @@ def get_groups():
         return jsonify({"success": False, "message": "Não autenticado"}), 401
     return jsonify({"success": True, "groups": groups_cache}), 200
 
+@app.route("/images", methods=["POST"])
+def upload_images():
+    if not authenticated:
+        return jsonify({"success": False, "message": "Não autenticado"}), 401
+
+    # Recebe arquivos via multipart/form-data
+    if "images" not in request.files:
+        return jsonify({"success": False, "message": "Nenhuma imagem enviada"}), 400
+
+    files = request.files.getlist("images")
+    texts = request.form.get("texts")
+    if texts:
+        import json
+        try:
+            texts = json.loads(texts)
+        except:
+            return jsonify({"success": False, "message": "Erro ao processar os textos das imagens"}), 400
+
+    if texts and len(texts) != len(files):
+        return jsonify({"success": False, "message": "O número de textos não corresponde ao número de imagens"}), 400
+
+    uploaded_data = []
+    for i, f in enumerate(files):
+        filename = f"{uuid.uuid4()}_{f.filename}"
+        filepath = os.path.join(upload_dir, filename)
+        f.save(filepath)
+        text = texts[i] if texts and i < len(texts) else ""
+        uploaded_data.append({"path": filepath, "text": text})
+
+    return jsonify({"success": True, "uploaded_images": uploaded_data}), 200
+
 @app.route("/tasks", methods=["POST"])
 def add_new_tasks():
     if not authenticated:
