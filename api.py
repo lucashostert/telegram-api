@@ -301,6 +301,39 @@ def list_tasks():
         tasks_list.append({"task_id": tid, **tdata})
     return jsonify({"success": True, "tasks": tasks_list}), 200
 
+@app.route("/auth/logout", methods=["POST"])
+def logout():
+    global authenticated, authenticated_phone, tasks
+
+    try:
+        # Desconectar do Telegram
+        if client:
+            asyncio.run_coroutine_threadsafe(client.disconnect(), asyncio_loop)
+        authenticated = False
+        authenticated_phone = None
+
+        # Apagar as tarefas
+        tasks.clear()
+        conn = sqlite3.connect(db_file)
+        c = conn.cursor()
+        c.execute("DELETE FROM tasks")
+        conn.commit()
+        conn.close()
+
+        # Apagar login salvo
+        conn = sqlite3.connect(db_file)
+        c = conn.cursor()
+        c.execute("DELETE FROM login")
+        conn.commit()
+        conn.close()
+
+        return jsonify({"success": True, "message": "Logout realizado com sucesso"}), 200
+
+    except Exception as e:
+        print(f"Erro no logout: {e}")
+        return jsonify({"success": False, "message": f"Erro ao realizar logout: {e}"}), 500
+
+
 @app.route("/tasks/<task_id>/stop", methods=["PUT"])
 def stop_a_task(task_id):
     if not authenticated:
