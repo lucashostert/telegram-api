@@ -11,6 +11,8 @@ from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.functions.channels import GetFullChannelRequest
 from threading import Thread
 import time
+from datetime import datetime
+
 
 # Inicialização do Flask
 app = Flask(__name__)
@@ -259,7 +261,7 @@ def add_new_tasks():
         return jsonify({"success": False, "message": "group_name, time e images são obrigatórios"}), 400
 
     try:
-        time.strptime(time, "%H:%M")
+        datetime.strptime(time, "%H:%M")
     except ValueError:
         return jsonify({"success": False, "message": "Horário inválido. Use o formato HH:MM"}), 400
 
