@@ -311,12 +311,8 @@ def logout():
         # Desconectar do Telegram
         if client:
             print("[LOGOUT] Desconectando do cliente do Telegram...")
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                # Cria um novo loop de eventos se não houver um ativo
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             loop.run_until_complete(client.disconnect())
 
         # Atualizar estado global
