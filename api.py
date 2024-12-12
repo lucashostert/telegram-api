@@ -303,36 +303,51 @@ def list_tasks():
 
 @app.route("/auth/logout", methods=["POST"])
 def logout():
-    global authenticated, authenticated_phone, tasks
+    global authenticated, authenticated_phone, tasks, client
 
     try:
+        print("[LOGOUT] Iniciando logout...")
+
         # Desconectar do Telegram
         if client:
-            asyncio.run_coroutine_threadsafe(client.disconnect(), asyncio_loop)
+            print("[LOGOUT] Desconectando do cliente do Telegram...")
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                # Cria um novo loop de eventos se não houver um ativo
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            loop.run_until_complete(client.disconnect())
+
+        # Atualizar estado global
         authenticated = False
         authenticated_phone = None
 
-        # Apagar as tarefas
+        # Limpar tarefas em memória
+        print("[LOGOUT] Limpando tarefas...")
         tasks.clear()
+
+        # Apagar tarefas do banco de dados
         conn = sqlite3.connect(db_file)
         c = conn.cursor()
         c.execute("DELETE FROM tasks")
         conn.commit()
         conn.close()
+        print("[LOGOUT] Tarefas removidas do banco de dados.")
 
-        # Apagar login salvo
+        # Apagar login salvo no banco de dados
         conn = sqlite3.connect(db_file)
         c = conn.cursor()
         c.execute("DELETE FROM login")
         conn.commit()
         conn.close()
+        print("[LOGOUT] Login removido do banco de dados.")
 
         return jsonify({"success": True, "message": "Logout realizado com sucesso"}), 200
 
     except Exception as e:
-        print(f"Erro no logout: {e}")
+        print(f"[ERRO] Erro ao realizar logout: {e}")
         return jsonify({"success": False, "message": f"Erro ao realizar logout: {e}"}), 500
-
 
 @app.route("/tasks/<task_id>/stop", methods=["PUT"])
 def stop_a_task(task_id):
