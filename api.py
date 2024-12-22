@@ -12,6 +12,7 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from threading import Thread
 import time
 from datetime import datetime
+import base64
 
 
 # Inicialização do Flask
@@ -49,10 +50,11 @@ def init_db():
         CREATE TABLE IF NOT EXISTS tasks (
             id TEXT PRIMARY KEY,
             group_name TEXT,
-            time TEXT,
-            image TEXT,
-            text TEXT,
-            status TEXT
+            scheduled_time TEXT,
+            message_text TEXT,
+            image_path TEXT,
+            status TEXT,
+            tag_members INTEGER
         )
     ''')
     conn.commit()
@@ -137,10 +139,52 @@ async def send_image_to_group(group_name, image_path, text=""):
 async def schedule_task(task_id, task_details):
     while tasks.get(task_id, {}).get("status") == "Rodando":
         current_time = time.strftime("%H:%M")
-        if current_time == task_details["time"]:
-            await send_image_to_group(task_details["group_name"], task_details["image"], task_details["text"])
+        if current_time == task_details["scheduled_time"]:
+            await send_image_to_group(task_details["group_name"], task_details["image_path"], task_details["message_text"])
             await asyncio.sleep(60)  # Espera 1 minuto antes de verificar novamente
         await asyncio.sleep(1)
+
+async def get_group_members(group_name):
+    try:
+        for dialog in await client.get_dialogs():
+            if dialog.name == group_name:
+                participants = await client.get_participants(dialog)
+                return [{"id": user.id, "username": user.username, "first_name": user.first_name} for user in participants]
+    except Exception as e:
+        print(f"Erro ao obter membros do grupo: {str(e)}")
+        return []
+
+async def send_tag_message(group_name):
+    try:
+        # Encontrar o grupo
+        target_group = None
+        async for dialog in client.iter_dialogs():
+            if dialog.name == group_name:
+                target_group = dialog
+                break
+        
+        if not target_group:
+            return False, "Grupo não encontrado"
+
+        # Obter participantes
+        participants = await client.get_participants(target_group)
+        
+        # Criar mensagem de marcação
+        tag_message = ""
+        for user in participants:
+            if user.username:
+                tag_message += f"@{user.username} "
+            elif user.first_name:
+                tag_message += f"[{user.first_name}](tg://user?id={user.id}) "
+        
+        # Enviar mensagem
+        if tag_message:
+            await client.send_message(target_group, tag_message.strip())
+            return True, "Mensagem de marcação enviada com sucesso"
+        return False, "Nenhum membro para marcar"
+        
+    except Exception as e:
+        return False, f"Erro ao enviar mensagem de marcação: {str(e)}"
 
 # Loop Assíncrono
 def start_asyncio_loop():
@@ -164,10 +208,10 @@ def load_state():
         client = TelegramClient(StringSession(session_str), int(api_id), api_hash)
         asyncio.run_coroutine_threadsafe(client.connect(), asyncio_loop)
         authenticated = True
-    c.execute("SELECT id, group_name, time, image, text, status FROM tasks")
+    c.execute("SELECT id, group_name, scheduled_time, message_text, image_path, status, tag_members FROM tasks")
     for row in c.fetchall():
-        task_id, group_name, time, image, text, status = row
-        tasks[task_id] = {"group_name": group_name, "time": time, "image": image, "text": text, "status": status}
+        task_id, group_name, scheduled_time, message_text, image_path, status, tag_members = row
+        tasks[task_id] = {"group_name": group_name, "scheduled_time": scheduled_time, "message_text": message_text, "image_path": image_path, "status": status, "tag_members": tag_members}
         if status == "Rodando":
             asyncio.run_coroutine_threadsafe(schedule_task(task_id, tasks[task_id]), asyncio_loop)
     conn.close()
@@ -247,49 +291,98 @@ def upload_images():
 
     return jsonify({"success": True, "uploaded_images": uploaded_data}), 200
 
-@app.route("/tasks", methods=["POST"])
+@app.route("/tag_members/<group_name>", methods=["GET"])
+async def tag_members(group_name):
+    if not authenticated:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    members = await get_group_members(group_name)
+    tag_text = ""
+    for member in members:
+        if member["username"]:
+            tag_text += f"@{member['username']} "
+        elif member["first_name"]:
+            tag_text += f"[{member['first_name']}](tg://user?id={member['id']}) "
+
+    return jsonify({"tag_text": tag_text.strip()})
+
+@app.route("/tag_members_individual/<group_name>", methods=["GET"])
+async def tag_members_individual(group_name):
+    if not authenticated:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    members = await get_group_members(group_name)
+    individual_tags = []
+    for member in members:
+        if member["username"]:
+            individual_tags.append(f"@{member['username']}")
+        elif member["first_name"]:
+            individual_tags.append(f"[{member['first_name']}](tg://user?id={member['id']})")
+
+    return jsonify({"individual_tags": individual_tags})
+
+@app.route("/add_tasks", methods=["POST"])
 def add_new_tasks():
     if not authenticated:
-        return jsonify({"success": False, "message": "Não autenticado"}), 401
+        return jsonify({"error": "Not authenticated"}), 401
 
-    data = request.json
-    group_name = data.get("group_name")
-    time = data.get("time")
-    images_data = data.get("images")
+    if 'tasks' not in request.json:
+        return jsonify({"error": "No tasks provided"}), 400
 
-    if not group_name or not time or not images_data:
-        return jsonify({"success": False, "message": "group_name, time e images são obrigatórios"}), 400
+    tasks_data = request.json['tasks']
+    response_tasks = []
 
-    try:
-        datetime.strptime(time, "%H:%M")
-    except ValueError:
-        return jsonify({"success": False, "message": "Horário inválido. Use o formato HH:MM"}), 400
-
-    created_tasks = []
-    conn = sqlite3.connect(db_file)
-    c = conn.cursor()
-    for img in images_data:
-        path = img.get("path")
-        text = img.get("text", "")
-        if not os.path.isfile(path):
-            return jsonify({"success": False, "message": f"Imagem {path} não encontrada"}), 400
+    for task in tasks_data:
+        if 'group_name' not in task or 'scheduled_time' not in task:
+            continue
 
         task_id = str(uuid.uuid4())
-        tasks[task_id] = {
-            "group_name": group_name,
-            "time": time,
-            "image": path,
-            "text": text,
-            "status": "Rodando",
-        }
-        c.execute("INSERT INTO tasks (id, group_name, time, image, text, status) VALUES (?, ?, ?, ?, ?, ?)",
-                  (task_id, group_name, time, path, text, "Rodando"))
-        asyncio.run_coroutine_threadsafe(schedule_task(task_id, tasks[task_id]), asyncio_loop)
-        created_tasks.append({"task_id": task_id})
-    conn.commit()
-    conn.close()
+        
+        # Processar imagem se existir
+        image_path = None
+        if 'image' in task and task['image'].strip():
+            try:
+                image_data = task['image'].split(',')[1]
+                image_bytes = base64.b64decode(image_data)
+                filename = f"{task_id}{os.path.splitext(task.get('filename', '.jpg'))[1]}"
+                image_path = os.path.join(upload_dir, filename)
+                
+                with open(image_path, 'wb') as f:
+                    f.write(image_bytes)
+            except Exception as e:
+                print(f"Erro ao processar imagem: {str(e)}")
 
-    return jsonify({"success": True, "tasks_created": created_tasks}), 200
+        task_details = {
+            "group_name": task['group_name'],
+            "scheduled_time": task['scheduled_time'],
+            "image_path": image_path,
+            "message_text": task.get('text', ''),
+            "status": "scheduled",
+            "tag_members": task.get('tag_members', False)
+        }
+
+        tasks[task_id] = task_details
+        
+        # Salvar no banco de dados
+        conn = sqlite3.connect(db_file)
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO tasks (id, group_name, scheduled_time, message_text, image_path, status, tag_members)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (task_id, task_details["group_name"], task_details["scheduled_time"], 
+              task_details["message_text"], task_details.get("image_path", ""), task_details["status"],
+              task_details["tag_members"]))
+        conn.commit()
+        conn.close()
+
+        # Se tag_members for True, agendar o envio da mensagem de marcação
+        if task_details["tag_members"]:
+            asyncio.run_coroutine_threadsafe(send_tag_message(task_details["group_name"]), asyncio_loop)
+
+        asyncio.run_coroutine_threadsafe(schedule_task(task_id, task_details), asyncio_loop)
+        response_tasks.append({"task_id": task_id, **task_details})
+
+    return jsonify({"message": "Tasks added successfully", "tasks": response_tasks})
 
 @app.route("/tasks", methods=["GET"])
 def list_tasks():
@@ -400,6 +493,46 @@ def delete_a_task(task_id):
 @app.route("/uploads/<path:filename>", methods=["GET"])
 def serve_uploaded_file(filename):
     return send_from_directory(upload_dir, filename)
+
+@app.route("/edit_task/<task_id>", methods=["PUT"])
+def edit_task(task_id):
+    if task_id not in tasks:
+        return jsonify({"error": "Task not found"}), 404
+
+    data = request.json
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+
+    task = tasks[task_id]
+    if "group_name" in data:
+        task["group_name"] = data["group_name"]
+    if "scheduled_time" in data:
+        task["scheduled_time"] = data["scheduled_time"]
+    if "message_text" in data:
+        task["message_text"] = data["message_text"]
+
+    conn = sqlite3.connect(db_file)
+    c = conn.cursor()
+    c.execute("""
+        UPDATE tasks 
+        SET group_name = ?, scheduled_time = ?, message_text = ?, status = ?
+        WHERE id = ?
+    """, (task["group_name"], task["scheduled_time"], task["message_text"], task["status"], task_id))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"message": "Task updated successfully", "task": task})
+
+@app.route("/send_tag_message/<group_name>", methods=["POST"])
+def tag_message_endpoint(group_name):
+    if not authenticated:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    success, message = asyncio.run(send_tag_message(group_name))
+    
+    if success:
+        return jsonify({"message": message}), 200
+    return jsonify({"error": message}), 400
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=443, ssl_context=("/etc/letsencrypt/live/paineltech.shop/fullchain.pem", "/etc/letsencrypt/live/paineltech.shop/privkey.pem"))
