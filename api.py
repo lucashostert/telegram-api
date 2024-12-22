@@ -423,49 +423,43 @@ def list_tasks():
         tasks_list.append({"task_id": tid, **tdata})
     return jsonify({"success": True, "tasks": tasks_list}), 200
 
-@app.route("/auth/logout", methods=["POST"])
+@app.route("/logout", methods=["POST"])
 def logout():
-    global authenticated, authenticated_phone, tasks, client
+    global client, authenticated, api_id, api_hash
+    
+    if not authenticated:
+        return jsonify({"error": "Not authenticated"}), 401
 
     try:
-        print("[LOGOUT] Iniciando logout...")
+        # Desconectar cliente do Telegram
+        async def disconnect_client():
+            try:
+                if client:
+                    await client.log_out()
+                    await client.disconnect()
+            except Exception as e:
+                print(f"Erro ao desconectar cliente: {str(e)}")
 
-        # Desconectar do Telegram
-        if client:
-            print("[LOGOUT] Desconectando do cliente do Telegram...")
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(client.disconnect())
+        # Executar desconexão de forma assíncrona
+        asyncio.run_coroutine_threadsafe(disconnect_client(), asyncio_loop).result()
 
-        # Atualizar estado global
-        authenticated = False
-        authenticated_phone = None
-
-        # Limpar tarefas em memória
-        print("[LOGOUT] Limpando tarefas...")
-        tasks.clear()
-
-        # Apagar tarefas do banco de dados
-        conn = sqlite3.connect(db_file)
-        c = conn.cursor()
-        c.execute("DELETE FROM tasks")
-        conn.commit()
-        conn.close()
-        print("[LOGOUT] Tarefas removidas do banco de dados.")
-
-        # Apagar login salvo no banco de dados
+        # Limpar dados do banco
         conn = sqlite3.connect(db_file)
         c = conn.cursor()
         c.execute("DELETE FROM login")
         conn.commit()
         conn.close()
-        print("[LOGOUT] Login removido do banco de dados.")
 
-        return jsonify({"success": True, "message": "Logout realizado com sucesso"}), 200
+        # Resetar variáveis globais
+        authenticated = False
+        api_id = None
+        api_hash = None
+        client = None
+
+        return jsonify({"message": "Logout realizado com sucesso"}), 200
 
     except Exception as e:
-        print(f"[ERRO] Erro ao realizar logout: {e}")
-        return jsonify({"success": False, "message": f"Erro ao realizar logout: {e}"}), 500
+        return jsonify({"error": f"Erro ao realizar logout: {str(e)}"}), 500
 
 @app.route("/tasks/<task_id>/stop", methods=["PUT"])
 def stop_a_task(task_id):
