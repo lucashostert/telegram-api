@@ -207,6 +207,16 @@ async def send_tag_message(group_name):
     except Exception as e:
         return False, f"Erro ao enviar mensagem de marcação: {str(e)}"
 
+async def check_group_exists(group_name):
+    try:
+        async for dialog in client.iter_dialogs():
+            if dialog.name == group_name:
+                return True
+        return False
+    except Exception as e:
+        print(f"Erro ao verificar grupo: {str(e)}")
+        return False
+
 # Loop Assíncrono
 def start_asyncio_loop():
     global asyncio_loop
@@ -519,6 +529,9 @@ def serve_uploaded_file(filename):
 
 @app.route("/edit_task/<task_id>", methods=["PUT"])
 def edit_task(task_id):
+    if not authenticated:
+        return jsonify({"error": "Not authenticated"}), 401
+
     if task_id not in tasks:
         return jsonify({"error": "Task not found"}), 404
 
@@ -527,22 +540,54 @@ def edit_task(task_id):
         return jsonify({"error": "No data provided"}), 400
 
     task = tasks[task_id]
+    old_task = task.copy()  # Guardar estado anterior para comparação
+
+    # Se estiver mudando o grupo, verificar se existe
+    if "group_name" in data and data["group_name"] != task["group_name"]:
+        group_exists = asyncio.run_coroutine_threadsafe(
+            check_group_exists(data["group_name"]), 
+            asyncio_loop
+        ).result()
+        
+        if not group_exists:
+            return jsonify({
+                "error": f"Grupo '{data['group_name']}' não encontrado. Verifique se o bot está adicionado ao grupo."
+            }), 400
+
+    # Atualizar os campos fornecidos
     if "group_name" in data:
         task["group_name"] = data["group_name"]
     if "time" in data:
         task["time"] = data["time"]
     if "text" in data:
         task["text"] = data["text"]
+    if "tag_members" in data:
+        task["tag_members"] = data["tag_members"]
 
+    # Atualizar no banco de dados
     conn = sqlite3.connect(db_file)
     c = conn.cursor()
     c.execute("""
         UPDATE tasks 
-        SET group_name = ?, time = ?, text = ?, status = ?
+        SET group_name = ?, time = ?, text = ?, status = ?, tag_members = ?
         WHERE id = ?
-    """, (task["group_name"], task["time"], task["text"], task["status"], task_id))
+    """, (task["group_name"], task["time"], task["text"], task["status"], 
+          1 if task.get("tag_members", False) else 0, task_id))
     conn.commit()
     conn.close()
+
+    # Reagendar a task se necessário
+    needs_reschedule = (
+        ("group_name" in data and data["group_name"] != old_task["group_name"]) or
+        ("time" in data and data["time"] != old_task["time"])
+    )
+
+    if needs_reschedule:
+        # Cancelar tarefa antiga
+        if task_id in tasks:
+            tasks[task_id]["status"] = "Parado"
+        # Criar nova tarefa
+        asyncio.run_coroutine_threadsafe(schedule_task(task_id, task), asyncio_loop)
 
     return jsonify({"message": "Task updated successfully", "task": task})
 
