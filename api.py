@@ -37,6 +37,38 @@ db_file = "data.db"
 def init_db():
     conn = sqlite3.connect(db_file)
     c = conn.cursor()
+    
+    # Primeiro, vamos fazer backup da tabela existente
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS tasks_backup AS
+        SELECT * FROM tasks
+    ''')
+    
+    # Dropar a tabela antiga
+    c.execute('DROP TABLE IF EXISTS tasks')
+    
+    # Criar a nova tabela com a estrutura correta
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS tasks (
+            id TEXT PRIMARY KEY,
+            group_name TEXT,
+            time TEXT,
+            text TEXT,
+            image TEXT,
+            status TEXT,
+            tag_members INTEGER DEFAULT 0
+        )
+    ''')
+    
+    # Restaurar dados do backup se existir
+    try:
+        c.execute('INSERT INTO tasks SELECT * FROM tasks_backup')
+    except:
+        pass
+    
+    # Remover tabela de backup
+    c.execute('DROP TABLE IF EXISTS tasks_backup')
+    
     c.execute('''
         CREATE TABLE IF NOT EXISTS login (
             id INTEGER PRIMARY KEY,
@@ -44,17 +76,6 @@ def init_db():
             api_hash TEXT,
             phone TEXT,
             session TEXT
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS tasks (
-            id TEXT PRIMARY KEY,
-            group_name TEXT,
-            scheduled_time TEXT,
-            message_text TEXT,
-            image_path TEXT,
-            status TEXT,
-            tag_members INTEGER
         )
     ''')
     conn.commit()
@@ -139,8 +160,8 @@ async def send_image_to_group(group_name, image_path, text=""):
 async def schedule_task(task_id, task_details):
     while tasks.get(task_id, {}).get("status") == "Rodando":
         current_time = time.strftime("%H:%M")
-        if current_time == task_details["scheduled_time"]:
-            await send_image_to_group(task_details["group_name"], task_details["image_path"], task_details["message_text"])
+        if current_time == task_details["time"]:
+            await send_image_to_group(task_details["group_name"], task_details["image"], task_details["text"])
             await asyncio.sleep(60)  # Espera 1 minuto antes de verificar novamente
         await asyncio.sleep(1)
 
@@ -198,20 +219,28 @@ asyncio_thread.start()
 
 # Persistência do Estado
 def load_state():
-    global authenticated, authenticated_phone, client, api_id, api_hash
+    global client, authenticated, api_id, api_hash
     conn = sqlite3.connect(db_file)
     c = conn.cursor()
     c.execute("SELECT api_id, api_hash, phone, session FROM login ORDER BY id DESC LIMIT 1")
-    result = c.fetchone()
-    if result:
-        api_id, api_hash, authenticated_phone, session_str = result
+    row = c.fetchone()
+    if row:
+        api_id, api_hash, phone, session_str = row
         client = TelegramClient(StringSession(session_str), int(api_id), api_hash)
         asyncio.run_coroutine_threadsafe(client.connect(), asyncio_loop)
         authenticated = True
-    c.execute("SELECT id, group_name, scheduled_time, message_text, image_path, status, tag_members FROM tasks")
+    
+    c.execute("SELECT id, group_name, time, text, image, status, tag_members FROM tasks")
     for row in c.fetchall():
-        task_id, group_name, scheduled_time, message_text, image_path, status, tag_members = row
-        tasks[task_id] = {"group_name": group_name, "scheduled_time": scheduled_time, "message_text": message_text, "image_path": image_path, "status": status, "tag_members": tag_members}
+        task_id, group_name, time, text, image, status, tag_members = row
+        tasks[task_id] = {
+            "group_name": group_name,
+            "time": time,
+            "text": text,
+            "image": image,
+            "status": status,
+            "tag_members": bool(tag_members)
+        }
         if status == "Rodando":
             asyncio.run_coroutine_threadsafe(schedule_task(task_id, tasks[task_id]), asyncio_loop)
     conn.close()
@@ -333,7 +362,7 @@ def add_new_tasks():
     response_tasks = []
 
     for task in tasks_data:
-        if 'group_name' not in task or 'scheduled_time' not in task:
+        if 'group_name' not in task or 'time' not in task:
             continue
 
         task_id = str(uuid.uuid4())
@@ -354,10 +383,10 @@ def add_new_tasks():
 
         task_details = {
             "group_name": task['group_name'],
-            "scheduled_time": task['scheduled_time'],
-            "image_path": image_path,
-            "message_text": task.get('text', ''),
-            "status": "scheduled",
+            "time": task['time'],
+            "text": task.get('text', ''),
+            "image": image_path,
+            "status": "Rodando",
             "tag_members": task.get('tag_members', False)
         }
 
@@ -367,11 +396,11 @@ def add_new_tasks():
         conn = sqlite3.connect(db_file)
         c = conn.cursor()
         c.execute("""
-            INSERT INTO tasks (id, group_name, scheduled_time, message_text, image_path, status, tag_members)
+            INSERT INTO tasks (id, group_name, time, text, image, status, tag_members)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (task_id, task_details["group_name"], task_details["scheduled_time"], 
-              task_details["message_text"], task_details.get("image_path", ""), task_details["status"],
-              task_details["tag_members"]))
+        """, (task_id, task_details["group_name"], task_details["time"], 
+              task_details["text"], task_details.get("image", ""), task_details["status"],
+              1 if task_details["tag_members"] else 0))
         conn.commit()
         conn.close()
 
@@ -506,18 +535,18 @@ def edit_task(task_id):
     task = tasks[task_id]
     if "group_name" in data:
         task["group_name"] = data["group_name"]
-    if "scheduled_time" in data:
-        task["scheduled_time"] = data["scheduled_time"]
-    if "message_text" in data:
-        task["message_text"] = data["message_text"]
+    if "time" in data:
+        task["time"] = data["time"]
+    if "text" in data:
+        task["text"] = data["text"]
 
     conn = sqlite3.connect(db_file)
     c = conn.cursor()
     c.execute("""
         UPDATE tasks 
-        SET group_name = ?, scheduled_time = ?, message_text = ?, status = ?
+        SET group_name = ?, time = ?, text = ?, status = ?
         WHERE id = ?
-    """, (task["group_name"], task["scheduled_time"], task["message_text"], task["status"], task_id))
+    """, (task["group_name"], task["time"], task["text"], task["status"], task_id))
     conn.commit()
     conn.close()
 
